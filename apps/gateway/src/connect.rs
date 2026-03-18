@@ -11,6 +11,7 @@ use crate::crypto::CryptoService;
 use crate::db;
 use crate::inject::{Injection, InjectionRule};
 use crate::policy::{PolicyAction, PolicyRule};
+use crate::vault;
 
 /// How long to cache resolved connect responses before re-checking.
 const CACHE_TTL_SECS: u64 = 60;
@@ -42,6 +43,7 @@ pub(crate) enum ConnectError {
 pub(crate) struct PolicyEngine {
     pub pool: sqlx::PgPool,
     pub crypto: Arc<CryptoService>,
+    pub vault_cache: Option<vault::cache::InMemoryUnlockCache>,
 }
 
 impl PolicyEngine {
@@ -138,8 +140,48 @@ impl PolicyEngine {
             });
         }
 
+        // 6. Also check vault records (OnlyKey-protected secrets)
+        if let Some(ref vc) = self.vault_cache {
+            let vault_records = vault::db::find_vault_records_by_host(
+                &self.pool,
+                &agent.user_id,
+                hostname,
+            )
+            .await
+            .unwrap_or_default();
+
+            for vr in vault_records {
+                let scope = vault::models::CacheScope::from_str(&vr.cache_scope);
+                let scope_id = &agent.id;
+                let idle = std::time::Duration::from_secs(vr.idle_timeout_seconds as u64);
+
+                // Try the unlock cache
+                if let Some(entry) = vc.get_and_touch(&vr.id, &scope, scope_id, idle) {
+                    // Decrypt with cached record key
+                    if let Ok(decrypted) = vault::crypto::decrypt_vault_secret(
+                        &entry.record_key,
+                        &vr.ciphertext_b64,
+                        &vr.nonce_b64,
+                        &vr.aad_json,
+                    ) {
+                        let path_pattern = vr.path_pattern.unwrap_or_else(|| "*".to_string());
+                        let injections =
+                            build_injections(&vr.record_type, &decrypted, vr.injection_config.as_ref());
+
+                        injection_rules.push(InjectionRule {
+                            path_pattern,
+                            injections,
+                        });
+                    }
+                }
+                // If not in cache, the record stays locked — agent must request via /v1/vault/records/:id/access
+            }
+        }
+
+        let intercept = !injection_rules.is_empty() || !matching_policy_rules.is_empty();
+
         Ok(ConnectResponse {
-            intercept: true,
+            intercept,
             injection_rules,
             policy_rules: matching_policy_rules,
             user_id: Some(agent.user_id),
@@ -226,7 +268,7 @@ fn build_injections(
             }
         }
 
-        "generic" => {
+        "generic" | "api_key" | "oauth_token" | "age_secret" | "generic_secret" => {
             let config = injection_config.and_then(|v| v.as_object());
             let header_name = config
                 .and_then(|c| c.get("headerName"))
