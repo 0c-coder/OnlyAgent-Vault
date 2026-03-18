@@ -30,7 +30,7 @@ const checkDatabase = async (): Promise<HealthCheckResponse["checks"]["database"
 };
 
 export const GET = async (): Promise<NextResponse<HealthCheckResponse>> => {
-  const [database] = await Promise.all([checkDatabase()]);
+  const database = await checkDatabase();
 
   const overallStatus: HealthStatus =
     database.status === "error" ? "degraded" : "ok";
