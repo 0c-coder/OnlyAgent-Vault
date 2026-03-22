@@ -25,6 +25,7 @@ mod crypto;
 
 mod db;
 mod gateway;
+mod hands;
 mod inject;
 mod policy;
 mod vault;
@@ -128,6 +129,13 @@ async fn main() -> Result<()> {
         default_origin: vault_origin,
     });
 
+    // Initialize OnlyAgent Hands subsystem
+    let hands_session_manager = Arc::new(hands::session::SessionManager::new());
+    let hands_state = Arc::new(hands::api::HandsState {
+        pool: pool.clone(),
+        session_manager: hands_session_manager.clone(),
+    });
+
     let policy_engine = Arc::new(PolicyEngine {
         pool: pool.clone(),
         crypto,
@@ -144,6 +152,21 @@ async fn main() -> Result<()> {
                 let removed = vc.unlock_cache.cleanup_expired();
                 if removed > 0 {
                     info!(removed = removed, "vault cache: cleaned up expired entries");
+                }
+            }
+        });
+    }
+
+    // Spawn periodic Hands session cleanup (every 60s, 5 min idle timeout)
+    {
+        let sm = hands_session_manager;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let stale = sm.cleanup_stale(300);
+                if stale > 0 {
+                    info!(stale = stale, "hands: cleaned up stale sessions");
                 }
             }
         });
@@ -166,7 +189,7 @@ async fn main() -> Result<()> {
     info!(port = cli.port, "gateway ready");
 
     // Start the gateway server (blocks forever)
-    let server = GatewayServer::new(ca, cli.port, policy_engine, vault_service, cache, vault_state);
+    let server = GatewayServer::new(ca, cli.port, policy_engine, vault_service, cache, vault_state, hands_state);
     server.run().await
 }
 
