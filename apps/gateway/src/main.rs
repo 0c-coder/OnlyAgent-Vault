@@ -118,7 +118,36 @@ async fn main() -> Result<()> {
     // Cloud: KMS envelope decryption (calls KMS Decrypt for each data key)
     let crypto = Arc::new(crypto::CryptoService::from_env().await?);
 
-    let policy_engine = Arc::new(PolicyEngine { pool, crypto });
+    // Initialize OnlyKey Vault subsystem (before PolicyEngine so we can share the cache)
+    let vault_origin = std::env::var("VAULT_ORIGIN")
+        .unwrap_or_else(|_| "apps.crp.to".to_string());
+    let vault_unlock_cache = vault::cache::InMemoryUnlockCache::new();
+    let vault_state = Arc::new(vault::api::VaultState {
+        pool: pool.clone(),
+        unlock_cache: vault_unlock_cache.clone(),
+        default_origin: vault_origin,
+    });
+
+    let policy_engine = Arc::new(PolicyEngine {
+        pool: pool.clone(),
+        crypto,
+        vault_cache: Some(vault_unlock_cache),
+    });
+
+    // Spawn periodic vault cache cleanup (every 60s)
+    {
+        let vc = vault_state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let removed = vc.unlock_cache.cleanup_expired();
+                if removed > 0 {
+                    info!(removed = removed, "vault cache: cleaned up expired entries");
+                }
+            }
+        });
+    }
 
     // Initialize vault service with Bitwarden provider
     let proxy_url = std::env::var("BITWARDEN_PROXY_URL")
@@ -137,7 +166,7 @@ async fn main() -> Result<()> {
     info!(port = cli.port, "gateway ready");
 
     // Start the gateway server (blocks forever)
-    let server = GatewayServer::new(ca, cli.port, policy_engine, vault_service, cache);
+    let server = GatewayServer::new(ca, cli.port, policy_engine, vault_service, cache, vault_state);
     server.run().await
 }
 

@@ -6,5 +6,6 @@ export const navItems: NavItem[] = [
   { title: "Agents", url: "/agents", icon: Bot },
   { title: "Rules", url: "/rules", icon: Shield },
   { title: "Secrets", url: "/secrets", icon: KeyRound },
+  { title: "Vault", url: "/vault", icon: Shield },
   { title: "Settings", url: "/settings", icon: Settings },
 ];

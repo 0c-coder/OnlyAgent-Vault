@@ -45,6 +45,8 @@ pub(crate) struct GatewayState {
     pub cache: Arc<dyn CacheStore>,
     /// Provider-agnostic vault service for credential fetching.
     pub vault_service: Arc<vault::VaultService>,
+    /// OnlyKey vault state for hardware-backed secret protection.
+    pub vault_state: Arc<vault::api::VaultState>,
 }
 
 // ── GatewayServer ───────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ impl GatewayServer {
         policy_engine: Arc<PolicyEngine>,
         vault_service: Arc<vault::VaultService>,
         cache: Arc<dyn CacheStore>,
+        vault_state: Arc<vault::api::VaultState>,
     ) -> Self {
         let state = GatewayState {
             ca: Arc::new(ca),
@@ -73,6 +76,7 @@ impl GatewayServer {
             policy_engine,
             cache,
             vault_service,
+            vault_state,
         };
 
         Self { state, port }
@@ -105,6 +109,16 @@ impl GatewayServer {
             ])
             .allow_credentials(true);
 
+        // Build OnlyKey vault sub-router with its own state (Arc<VaultState>).
+        let vault_router: Router = Router::new()
+            .route("/records/{id}/access", axum::routing::post(vault::api::access_record))
+            .route("/records/{id}/lock", axum::routing::post(vault::api::lock_record))
+            .route("/browser/pending", axum::routing::get(vault::api::get_pending_approvals))
+            .route("/browser/approve", axum::routing::post(vault::api::approve_request))
+            .route("/agents/{id}/lock", axum::routing::post(vault::api::lock_agent_records))
+            .route("/cache/revoke-all", axum::routing::post(vault::api::revoke_all_cache))
+            .with_state(Arc::clone(&self.state.vault_state));
+
         // Build the Axum router for non-CONNECT routes.
         // The fallback returns 400 Bad Request for anything other than defined routes.
         let axum_router = Router::new()
@@ -122,6 +136,7 @@ impl GatewayServer {
                 "/api/vault/{provider}/pair",
                 axum::routing::delete(vault::api::vault_disconnect),
             )
+            .nest("/v1/vault", vault_router)
             .layer(cors_layer)
             .fallback(fallback)
             .with_state(self.state.clone());
@@ -586,9 +601,6 @@ mod tests {
 
     #[test]
     fn strip_port_handles_ipv6_no_brackets() {
-        // IPv6 with port typically uses brackets, but strip_port just splits on ':'
-        // For bracket-wrapped IPv6 like [::1]:443, it returns "[" — this is acceptable
-        // since hyper always sends host:port format for CONNECT
         assert_eq!(strip_port("[::1]:443"), "[");
     }
 

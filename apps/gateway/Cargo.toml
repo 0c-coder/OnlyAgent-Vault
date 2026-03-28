@@ -64,8 +64,14 @@ anyhow = "1"
 # Time (for certificate validity)
 time = "0.3"
 
+# Chrono (for vault timestamp handling)
+chrono = { version = "0.4", features = ["serde"] }
+
+# ULID/CUID generation
+ulid = "1"
+
 # Direct database access
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono"] }
 
 # Agent Access (Bitwarden vault credential injection)
 ap-client = "0.9.0"

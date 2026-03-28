@@ -1,17 +1,28 @@
-//! Vault integration — provider-agnostic credential fetching from external vaults.
+//! Vault integration — provider-agnostic credential fetching from external vaults,
+//! plus OnlyKey hardware-backed secret protection via FIDO2/WebAuthn bridge.
 //!
 //! The `VaultProvider` trait defines the interface for vault backends (Bitwarden, etc.).
 //! `VaultService` is the orchestrator that routes requests to the correct provider.
+//!
+//! OnlyKey Vault: secrets are encrypted with per-record AES-256-GCM keys. Those record
+//! keys are wrapped using a shared secret derived from OnlyKey's `ok.derive_shared_secret()`
+//! via the browser FIDO2 bridge. OneCLI stores NO private decryption keys.
 
 pub(crate) mod api;
 pub(crate) mod bitwarden;
 pub(crate) mod bitwarden_db;
 
+// OnlyKey vault submodules
+pub mod cache;
+pub mod crypto;
+pub mod db;
+pub mod models;
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use sqlx::PgPool;
 
-use crate::db;
+use crate::db as main_db;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -109,7 +120,7 @@ impl VaultService {
     pub async fn disconnect(&self, user_id: &str, provider: &str) -> Result<()> {
         let p = self.find_provider(provider)?;
         p.disconnect(user_id).await?;
-        db::delete_vault_connection(&self.pool, user_id, provider).await?;
+        main_db::delete_vault_connection(&self.pool, user_id, provider).await?;
         Ok(())
     }
 
