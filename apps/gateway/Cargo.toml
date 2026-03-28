@@ -61,6 +61,12 @@ futures-util = "0.3"
 # Error handling
 anyhow = "1"
 
+# Date/time (for Hands DB rows)
+chrono = { version = "0.4", features = ["serde"] }
+
+# ULID generation (for Hands session tokens)
+ulid = "1"
+
 # Time (for certificate validity)
 time = "0.3"
 

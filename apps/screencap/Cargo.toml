@@ -1,0 +1,27 @@
+[package]
+name = "onlyagent-screencap"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Screenshot capture agent for OnlyAgent Hands"
+
+[[bin]]
+name = "onlyagent-screencap"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"

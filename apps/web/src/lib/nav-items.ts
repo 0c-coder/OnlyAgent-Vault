@@ -1,4 +1,4 @@
-import { LayoutDashboard, Bot, Shield, KeyRound, Settings } from "lucide-react";
+import { LayoutDashboard, Bot, Shield, KeyRound, Hand, Settings } from "lucide-react";
 import type { NavItem } from "@/app/(dashboard)/_components/nav-main";
 
 export const navItems: NavItem[] = [
@@ -7,5 +7,6 @@ export const navItems: NavItem[] = [
   { title: "Rules", url: "/rules", icon: Shield },
   { title: "Secrets", url: "/secrets", icon: KeyRound },
   { title: "Vault", url: "/vault", icon: Shield },
+  { title: "Hands", url: "/hands", icon: Hand },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
