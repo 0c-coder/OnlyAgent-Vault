@@ -1,0 +1,9 @@
+[
+  { "title": "Overview", "url": "/overview", "icon": "LayoutDashboard" },
+  { "title": "Agents", "url": "/agents", "icon": "Bot" },
+  { "title": "Rules", "url": "/rules", "icon": "Shield" },
+  { "title": "Secrets", "url": "/secrets", "icon": "KeyRound" },
+  { "title": "Vault", "url": "/vault", "icon": "Shield" },
+  { "title": "Hands", "url": "/hands", "icon": "Hand" },
+  { "title": "Settings", "url": "/settings", "icon": "Settings" }
+]

@@ -30,14 +30,17 @@ use crate::auth::AuthUser;
 use crate::ca::CertificateAuthority;
 use crate::cache::CacheStore;
 use crate::connect::{self, ConnectError, PolicyEngine};
-use crate::hands;
 use crate::inject::{self, InjectionRule};
+use crate::module::GatewayModule;
 use crate::policy::{self, PolicyDecision, PolicyRule};
 use crate::vault;
 
 // ── GatewayState ───────────────────────────────────────────────────────
 
 /// Shared state for the gateway, passed to all request handlers.
+///
+/// Core fields only — feature-specific state lives inside each `GatewayModule`.
+/// Adding a new feature does NOT require editing this struct.
 #[derive(Clone)]
 pub(crate) struct GatewayState {
     pub ca: Arc<CertificateAuthority>,
@@ -46,10 +49,6 @@ pub(crate) struct GatewayState {
     pub cache: Arc<dyn CacheStore>,
     /// Provider-agnostic vault service for credential fetching.
     pub vault_service: Arc<vault::VaultService>,
-    /// OnlyKey vault state for hardware-backed secret protection.
-    pub vault_state: Arc<vault::api::VaultState>,
-    /// OnlyAgent Hands state for WebHID remote keystroke execution.
-    pub hands_state: Arc<hands::api::HandsState>,
 }
 
 // ── GatewayServer ───────────────────────────────────────────────────────
@@ -57,6 +56,7 @@ pub(crate) struct GatewayState {
 pub struct GatewayServer {
     state: GatewayState,
     port: u16,
+    modules: Vec<Box<dyn GatewayModule>>,
 }
 
 impl GatewayServer {
@@ -66,8 +66,7 @@ impl GatewayServer {
         policy_engine: Arc<PolicyEngine>,
         vault_service: Arc<vault::VaultService>,
         cache: Arc<dyn CacheStore>,
-        vault_state: Arc<vault::api::VaultState>,
-        hands_state: Arc<hands::api::HandsState>,
+        modules: Vec<Box<dyn GatewayModule>>,
     ) -> Self {
         let state = GatewayState {
             ca: Arc::new(ca),
@@ -80,11 +79,9 @@ impl GatewayServer {
             policy_engine,
             cache,
             vault_service,
-            vault_state,
-            hands_state,
         };
 
-        Self { state, port }
+        Self { state, port, modules }
     }
 
     /// Start the gateway TCP listener. Runs forever.
@@ -114,38 +111,9 @@ impl GatewayServer {
             ])
             .allow_credentials(true);
 
-        // Build OnlyKey vault sub-router with its own state (Arc<VaultState>).
-        let vault_router: Router = Router::new()
-            .route("/records/{id}/access", axum::routing::post(vault::api::access_record))
-            .route("/records/{id}/lock", axum::routing::post(vault::api::lock_record))
-            .route("/browser/pending", axum::routing::get(vault::api::get_pending_approvals))
-            .route("/browser/approve", axum::routing::post(vault::api::approve_request))
-            .route("/agents/{id}/lock", axum::routing::post(vault::api::lock_agent_records))
-            .route("/cache/revoke-all", axum::routing::post(vault::api::revoke_all_cache))
-            .with_state(Arc::clone(&self.state.vault_state));
-
-        // Build Hands sub-router with its own state.
-        let hands_router: Router = Router::new()
-            .route("/jobs", axum::routing::post(hands::api::create_job))
-            .route("/jobs", axum::routing::get(hands::api::list_jobs))
-            .route("/jobs/{id}", axum::routing::get(hands::api::get_job))
-            .route("/jobs/{id}/start", axum::routing::post(hands::api::start_job))
-            .route("/jobs/{id}/cancel", axum::routing::post(hands::api::cancel_job))
-            .route("/sessions", axum::routing::post(hands::api::create_session))
-            .route("/sessions/{id}", axum::routing::get(hands::api::get_session))
-            .route("/sessions/{id}", axum::routing::delete(hands::api::close_session))
-            .route("/sessions/{id}/activated", axum::routing::post(hands::api::activate_session))
-            .route("/sessions/{id}/emergency-stop", axum::routing::post(hands::api::emergency_stop))
-            .route("/sessions/{id}/next-packet", axum::routing::get(hands::api::next_packet))
-            .route("/sessions/{id}/packet-acked", axum::routing::post(hands::api::packet_acked))
-            .route("/sessions/{id}/step-status", axum::routing::post(hands::api::step_status))
-            .route("/screenshots", axum::routing::post(hands::api::upload_screenshot))
-            .route("/screenshots/{id}", axum::routing::get(hands::api::get_screenshot))
-            .with_state(Arc::clone(&self.state.hands_state));
-
-        // Build the Axum router for non-CONNECT routes.
-        // The fallback returns 400 Bad Request for anything other than defined routes.
-        let axum_router = Router::new()
+        // Auto-mount module routes and spawn background tasks.
+        // Each module provides its own sub-router and mount path.
+        let mut axum_router = Router::new()
             .route("/healthz", axum::routing::get(healthz))
             .route("/me", axum::routing::get(me))
             .route(
@@ -159,9 +127,20 @@ impl GatewayServer {
             .route(
                 "/api/vault/{provider}/pair",
                 axum::routing::delete(vault::api::vault_disconnect),
-            )
-            .nest("/v1/vault", vault_router)
-            .nest("/v1/hands", hands_router)
+            );
+
+        for module in &self.modules {
+            if let Some((path, router)) = module.router() {
+                info!(module = module.name(), path, "mounting module router");
+                axum_router = axum_router.nest(path, router);
+            }
+            for task in module.background_tasks() {
+                info!(module = module.name(), "spawning background task");
+                tokio::spawn(task);
+            }
+        }
+
+        let axum_router = axum_router
             .layer(cors_layer)
             .fallback(fallback)
             .with_state(self.state.clone());

@@ -1,0 +1,108 @@
+// ── OnlyKey Vault ──────────────────────────────────────────────────────
+//
+// Feature: OnlyKey hardware-backed secret protection
+// Owner: vault team — edit this file freely without touching base.prisma
+
+/// A secret record protected by OnlyKey hardware-derived encryption.
+/// The record key is wrapped using a shared secret derived via OnlyKey's
+/// FIDO2 bridge (ok.derive_shared_secret). OneCLI stores NO private keys.
+model VaultRecord {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  name            String
+  recordType      String   @map("record_type") // "api_key", "oauth_token", "age_secret", "generic_secret"
+
+  // AES-256-GCM encrypted secret payload
+  ciphertextB64   String   @map("ciphertext_b64") // base64-encoded ciphertext
+  nonceB64        String   @map("nonce_b64") // base64-encoded 12-byte nonce
+  aadJson         String   @map("aad_json") // JSON string of AAD used during encryption
+
+  // Wrapped record key (encrypted with OnlyKey-derived shared secret via HKDF)
+  wrappedKeyB64       String   @map("wrapped_key_b64") // base64-encoded wrapped record key ciphertext
+  wrappedKeyNonceB64  String   @map("wrapped_key_nonce_b64") // base64-encoded nonce for the key wrap
+  wrapAlg             String   @default("OK-DERIVED-HKDF-AESGCM-v1") @map("wrap_alg")
+
+  // OneCLI per-record public key (JWK) — input to ok.derive_shared_secret
+  onecliPubkeyJwk String   @map("onecli_pubkey_jwk") // JSON string of the JWK
+
+  // Derivation context for deterministic re-derivation
+  derivationContext String  @map("derivation_context") // JSON string: { record_id, purpose, version, tenant_id? }
+
+  // Policy
+  requireOnlykey                  Boolean @default(true) @map("require_onlykey")
+  unlockTtlSeconds                Int     @default(86400) @map("unlock_ttl_seconds") // 24h
+  idleTimeoutSeconds              Int     @default(3600) @map("idle_timeout_seconds") // 1h
+  cacheScope                      String  @default("agent") @map("cache_scope") // "global", "agent", "session"
+  allowManualRevoke               Boolean @default(true) @map("allow_manual_revoke")
+  relockOnBrowserDisconnect       Boolean @default(true) @map("relock_on_browser_disconnect")
+  relockOnPolicyChange            Boolean @default(true) @map("relock_on_policy_change")
+  requireFreshUnlockForHighRisk   Boolean @default(true) @map("require_fresh_unlock_for_high_risk")
+  allowPlaintextReturn            Boolean @default(true) @map("allow_plaintext_return")
+  allowedAgents                   String? @map("allowed_agents") // JSON array of agent IDs, null = all
+
+  // Versioning for cache invalidation
+  recordVersion    Int     @default(1) @map("record_version")
+  policyVersion    Int     @default(1) @map("policy_version")
+  keyVersion       Int     @default(1) @map("key_version")
+  unlockGeneration Int     @default(1) @map("unlock_generation")
+
+  // Host/path binding (reuse existing injection model)
+  hostPattern     String  @map("host_pattern") // "api.anthropic.com" or "*.example.com"
+  pathPattern     String? @map("path_pattern") // "/v1/*", null = all paths
+  injectionConfig Json?   @map("injection_config") // { headerName, valueFormat }
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  approvalRequests VaultApprovalRequest[]
+  auditEvents      VaultAuditEvent[]
+
+  @@index([userId])
+  @@map("vault_records")
+}
+
+/// Pending approval request — created when an agent requests a vault secret
+/// and the record is locked. The browser polls for these and fulfills them
+/// via OnlyKey.
+model VaultApprovalRequest {
+  id              String   @id @default(cuid())
+  recordId        String   @map("record_id")
+  agentId         String   @map("agent_id")
+  sessionId       String?  @map("session_id")
+  operation       String   // "unlock_record_key", "decrypt_age", "sign_blob"
+  status          String   @default("pending") // "pending", "approved", "denied", "expired"
+  origin          String   // trusted origin that must fulfill this
+  nonceB64        String   @map("nonce_b64") // one-time nonce to bind the request
+  browserSessionId String? @map("browser_session_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  expiresAt DateTime @map("expires_at") // auto-expire unfulfilled requests
+
+  record VaultRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([recordId])
+  @@index([status])
+  @@map("vault_approval_requests")
+}
+
+/// Immutable audit log for all vault operations.
+model VaultAuditEvent {
+  id        String   @id @default(cuid())
+  recordId  String   @map("record_id")
+  event     String   // "unlock_requested", "unlock_approved", "key_cached", "key_used", "key_revoked", etc.
+  agentId   String?  @map("agent_id")
+  sessionId String?  @map("session_id")
+  scopeType String?  @map("scope_type") // "global", "agent", "session"
+  scopeId   String?  @map("scope_id")
+  reason    String?  // "manual_revoke", "ttl_expired", "idle_timeout", "browser_disconnect", etc.
+  metadata  Json?    // additional context
+  createdAt DateTime @default(now()) @map("created_at")
+
+  record VaultRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([recordId])
+  @@index([event])
+  @@index([createdAt])
+  @@map("vault_audit_events")
+}
