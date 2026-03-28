@@ -1,0 +1,175 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["prismaSchemaFolder"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  name               String?
+  externalAuthId     String   @unique @map("external_auth_id")
+  apiKey             String?  @unique @map("api_key") // "oc_..." prefix, used for API auth
+  stripeCustomerId   String?  @unique @map("stripe_customer_id")
+  subscriptionStatus String   @default("free") @map("subscription_status")
+  demoSeeded         Boolean  @default(false) @map("demo_seeded")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  agents            Agent[]
+  secrets           Secret[]
+  policyRules       PolicyRule[]
+  connectedServices ConnectedService[]
+  auditLogs         AuditLog[]
+  vaultConnections  VaultConnection[]
+  vaultRecords      VaultRecord[]
+  handsJobs         HandsJob[]
+
+  @@map("users")
+}
+
+model Agent {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  name        String
+  identifier  String? // user-provided machine-readable ID, unique per user
+  accessToken String   @unique @map("access_token") // "aoc_..." prefix, used for gateway auth
+  isDefault   Boolean  @default(false) @map("is_default")
+  secretMode  String   @default("all") @map("secret_mode") // "all" or "selective"
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  user        User     @relation(fields: [userId], references: [id])
+
+  agentSecrets AgentSecret[]
+  policyRules  PolicyRule[]
+
+  @@unique([userId, identifier])
+  @@index([userId])
+  @@map("agents")
+}
+
+model Secret {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  name            String
+  type            String // "anthropic", "generic"
+  encryptedValue  String   @map("encrypted_value") // AES-256-GCM encrypted via CryptoService
+  hostPattern     String   @map("host_pattern") // "api.anthropic.com" or "*.example.com"
+  pathPattern     String?  @map("path_pattern") // "/v1/*", null = all paths
+  injectionConfig Json?    @map("injection_config") // type-specific config (generic: { headerName, valueFormat })
+  metadata        Json? // type-specific metadata (anthropic: { authMode: "api-key" | "oauth" })
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  user            User     @relation(fields: [userId], references: [id])
+
+  agentSecrets AgentSecret[]
+
+  @@index([userId])
+  @@map("secrets")
+}
+
+model PolicyRule {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  name            String
+  hostPattern     String   @map("host_pattern") // "gmail.googleapis.com" or "*.googleapis.com"
+  pathPattern     String?  @map("path_pattern") // "/gmail/v1/users/me/messages/send" or "/gmail/*"
+  method          String? // "POST", null = all methods
+  action          String // "block" | "rate_limit"
+  enabled         Boolean
+  agentId         String?  @map("agent_id") // null = all agents, set = one agent only
+  rateLimit       Int?     @map("rate_limit") // max requests per window (only for rate_limit action)
+  rateLimitWindow String?  @map("rate_limit_window") // "minute" | "hour" | "day"
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  user            User     @relation(fields: [userId], references: [id])
+  agent           Agent?   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("policy_rules")
+}
+
+model AgentSecret {
+  agentId  String @map("agent_id")
+  secretId String @map("secret_id")
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  secret   Secret @relation(fields: [secretId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, secretId])
+  @@map("agent_secrets")
+}
+
+model ConnectedService {
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  provider     String
+  status       String    @default("connected")
+  accessToken  String?   @map("access_token")
+  refreshToken String?   @map("refresh_token")
+  tokenExpiry  DateTime? @map("token_expiry")
+  scopes       String[]  @default([])
+  metadata     Json?
+  connectedAt  DateTime  @default(now()) @map("connected_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  user         User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, provider])
+  @@map("connected_services")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  action    String
+  service   String
+  status    String
+  source    String   @default("app")
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
+
+model VaultConnection {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  provider        String
+  name            String?
+  status          String
+  connectionData  Json?     @map("connection_data")
+  lastConnectedAt DateTime? @map("last_connected_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  user            User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, provider])
+  @@map("vault_connections")
+}
+
+model ResendBadEmail {
+  id        String   @id @default(cuid())
+  email     String
+  eventType String   @map("event_type") // "email.bounced" or "email.complained"
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([email])
+  @@map("resend_bad_emails")
+}
+
+model ResendWebhook {
+  id           String   @id @default(cuid())
+  eventType    String   @map("event_type") // "email.sent", "email.bounced", "email.complained", etc.
+  emailSubject String?  @map("email_subject")
+  emailFrom    String?  @map("email_from")
+  emailTo      String?  @map("email_to")
+  eventData    Json?    @map("event_data")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("resend_webhooks")
+}

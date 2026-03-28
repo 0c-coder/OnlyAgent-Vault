@@ -1,0 +1,113 @@
+// ── OnlyAgent Hands ────────────────────────────────────────────────────
+//
+// Feature: WebHID remote keystroke execution via OnlyKey
+// Owner: hands team — edit this file freely without touching base.prisma
+
+/// A remote control job — a sequence of keystroke instructions to execute
+/// on a host machine via OnlyKey WebHID.
+model HandsJob {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  name            String
+  description     String
+  status          String    @default("draft") // draft|queued|running|paused|completed|failed|cancelled
+  hostOS          String?   @map("host_os") // macos|windows|linux
+  priority        Int       @default(0)
+  maxDurationSecs Int       @default(3600) @map("max_duration_secs")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  completedAt     DateTime? @map("completed_at")
+
+  user        User            @relation(fields: [userId], references: [id])
+  steps       HandsStep[]
+  sessions    HandsSession[]
+  auditEvents HandsAuditEvent[]
+
+  @@index([userId, status])
+  @@map("hands_jobs")
+}
+
+/// An individual step within a job.
+model HandsStep {
+  id                String    @id @default(cuid())
+  jobId             String    @map("job_id")
+  sequenceNumber    Int       @map("sequence_number")
+  description       String
+  macroInstructions Json      @map("macro_instructions") // MacroInstruction[]
+  expectedOutcome   String    @map("expected_outcome")
+  status            String    @default("pending") // pending|sending|executing|verifying|succeeded|failed|skipped
+  retryCount        Int       @default(0) @map("retry_count")
+  maxRetries        Int       @default(3) @map("max_retries")
+  timeoutMs         Int       @default(30000) @map("timeout_ms")
+  requireConfirm    Boolean   @default(false) @map("require_confirm")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  startedAt         DateTime? @map("started_at")
+  completedAt       DateTime? @map("completed_at")
+  errorMessage      String?   @map("error_message")
+
+  job         HandsJob          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  screenshots HandsScreenshot[]
+
+  @@index([jobId, sequenceNumber])
+  @@map("hands_steps")
+}
+
+/// An active WebHID control session (browser ↔ OnlyKey ↔ host).
+model HandsSession {
+  id               String    @id @default(cuid())
+  jobId            String    @map("job_id")
+  userId           String    @map("user_id")
+  agentToken       String    @map("agent_token") // screenshot agent auth token (session-scoped)
+  browserSessionId String?   @map("browser_session_id")
+  status           String    @default("establishing") // establishing|active|paused|closed
+  hostOS           String?   @map("host_os")
+  sessionKeyHash   String?   @map("session_key_hash") // SHA-256 of session key (audit only)
+  deviceId         String?   @map("device_id") // WebHID device identifier
+  createdAt        DateTime  @default(now()) @map("created_at")
+  lastActivityAt   DateTime  @default(now()) @map("last_activity_at")
+  closedAt         DateTime? @map("closed_at")
+  closeReason      String?   @map("close_reason")
+
+  job         HandsJob          @relation(fields: [jobId], references: [id])
+  screenshots HandsScreenshot[]
+
+  @@index([jobId, status])
+  @@map("hands_sessions")
+}
+
+/// A screenshot captured during a Hands session.
+model HandsScreenshot {
+  id          String    @id @default(cuid())
+  sessionId   String    @map("session_id")
+  stepId      String    @map("step_id")
+  capturedAt  DateTime  @default(now()) @map("captured_at")
+  imageData   Bytes     @map("image_data")
+  width       Int
+  height      Int
+  sizeBytes   Int       @map("size_bytes")
+  analysis    Json?     // AI analysis result
+  expiresAt   DateTime  @map("expires_at")
+
+  session HandsSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  step    HandsStep    @relation(fields: [stepId], references: [id])
+
+  @@index([sessionId, capturedAt(sort: Desc)])
+  @@index([stepId])
+  @@map("hands_screenshots")
+}
+
+/// Immutable audit log for Hands operations.
+model HandsAuditEvent {
+  id        String   @id @default(cuid())
+  jobId     String   @map("job_id")
+  event     String   // session_created|session_activated|instruction_sent|step_complete|emergency_stop|etc.
+  stepId    String?  @map("step_id")
+  sessionId String?  @map("session_id")
+  metadata  Json?
+  timestamp DateTime @default(now())
+
+  job HandsJob @relation(fields: [jobId], references: [id])
+
+  @@index([jobId, timestamp])
+  @@map("hands_audit_events")
+}

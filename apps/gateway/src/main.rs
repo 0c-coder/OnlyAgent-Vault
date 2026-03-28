@@ -27,6 +27,7 @@ mod db;
 mod gateway;
 mod hands;
 mod inject;
+mod module;
 mod policy;
 mod vault;
 
@@ -142,36 +143,6 @@ async fn main() -> Result<()> {
         vault_cache: Some(vault_unlock_cache),
     });
 
-    // Spawn periodic vault cache cleanup (every 60s)
-    {
-        let vc = vault_state.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                let removed = vc.unlock_cache.cleanup_expired();
-                if removed > 0 {
-                    info!(removed = removed, "vault cache: cleaned up expired entries");
-                }
-            }
-        });
-    }
-
-    // Spawn periodic Hands session cleanup (every 60s, 5 min idle timeout)
-    {
-        let sm = hands_session_manager;
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                let stale = sm.cleanup_stale(300);
-                if stale > 0 {
-                    info!(stale = stale, "hands: cleaned up stale sessions");
-                }
-            }
-        });
-    }
-
     // Initialize vault service with Bitwarden provider
     let proxy_url = std::env::var("BITWARDEN_PROXY_URL")
         .unwrap_or_else(|_| "wss://ap.lesspassword.dev".to_string());
@@ -186,10 +157,32 @@ async fn main() -> Result<()> {
     // OSS: in-memory DashMap. Cloud: Redis (ElastiCache with TLS + AUTH).
     let cache = cache::create_store().await?;
 
+    // ── Register feature modules ─────────────────────────────────────
+    // Each module owns its routes, state, and background tasks.
+    // To add a new feature: create the module, register it here. No edits
+    // to gateway.rs or GatewayState needed.
+    let mut registry = module::ModuleRegistry::new();
+
+    registry.register(vault::VaultModule {
+        vault_state,
+    });
+
+    registry.register(hands::HandsModule {
+        hands_state,
+        session_manager: hands_session_manager,
+    });
+
     info!(port = cli.port, "gateway ready");
 
     // Start the gateway server (blocks forever)
-    let server = GatewayServer::new(ca, cli.port, policy_engine, vault_service, cache, vault_state, hands_state);
+    let server = GatewayServer::new(
+        ca,
+        cli.port,
+        policy_engine,
+        vault_service,
+        cache,
+        registry.into_modules(),
+    );
     server.run().await
 }
 

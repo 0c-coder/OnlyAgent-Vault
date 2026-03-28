@@ -132,3 +132,53 @@ impl VaultService {
             .ok_or_else(|| anyhow!("unknown vault provider: {}", name))
     }
 }
+
+// ── GatewayModule implementation ─────────────────────────────────────
+
+use std::future::Future;
+use std::pin::Pin;
+
+use axum::Router;
+use tracing::info;
+
+use crate::module::GatewayModule;
+
+/// Self-registering vault module for the gateway.
+/// Contains both Bitwarden provider-agnostic routes and OnlyKey hardware vault routes.
+pub struct VaultModule {
+    pub vault_state: Arc<api::VaultState>,
+}
+
+impl GatewayModule for VaultModule {
+    fn name(&self) -> &'static str {
+        "vault"
+    }
+
+    fn router(&self) -> Option<(&str, Router)> {
+        let router: Router = Router::new()
+            .route("/records/{id}/access", axum::routing::post(api::access_record))
+            .route("/records/{id}/lock", axum::routing::post(api::lock_record))
+            .route("/browser/pending", axum::routing::get(api::get_pending_approvals))
+            .route("/browser/approve", axum::routing::post(api::approve_request))
+            .route("/agents/{id}/lock", axum::routing::post(api::lock_agent_records))
+            .route("/cache/revoke-all", axum::routing::post(api::revoke_all_cache))
+            .with_state(Arc::clone(&self.vault_state));
+
+        Some(("/v1/vault", router))
+    }
+
+    fn background_tasks(&self) -> Vec<Pin<Box<dyn Future<Output = ()> + Send>>> {
+        let vc = self.vault_state.clone();
+        let cleanup = async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let removed = vc.unlock_cache.cleanup_expired();
+                if removed > 0 {
+                    info!(removed = removed, "vault cache: cleaned up expired entries");
+                }
+            }
+        };
+        vec![Box::pin(cleanup)]
+    }
+}
